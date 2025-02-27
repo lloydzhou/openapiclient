@@ -4,10 +4,10 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setup(
-    name="openapiclient",
-    version="0.1.0",
+    name="openapi-httpx-client",
+    version="0.1.1",
     author="lloydzhou",
-    author_email="lloydzhou@example.com",
+    author_email="lloydzhou@qq.com",
     description="A Python client for OpenAPI specifications using httpx",
     long_description=long_description,
     long_description_content_type="text/markdown",

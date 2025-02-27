@@ -5,7 +5,7 @@ A Python implementation inspired by [openapi-client-axios](https://github.com/op
 ## Installation
 
 ```bash
-pip install -e .
+pip install openapi-httpx-client
 ```
 
 ## Usage
