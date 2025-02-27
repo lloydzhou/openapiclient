@@ -1,7 +1,7 @@
 import httpx
 import json
 import os.path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 import yaml
 import types
 
@@ -10,11 +10,11 @@ class OpenAPIClient:
     A Python client for OpenAPI specifications, inspired by openapi-client-axios.
     Uses httpx for HTTP requests.
     """
-    
+
     def __init__(self, definition=None):
         """
         Initialize the OpenAPI client.
-        
+
         Args:
             definition: URL or file path to the OpenAPI definition, or a dictionary containing the definition
         """
@@ -23,27 +23,27 @@ class OpenAPIClient:
         self.client = None
         self.base_url = ''
         self.session = None
-    
+        self.source_url = None  # Store the source URL if loaded from a URL
+
     async def init(self):
         """
         Initialize the client by loading and parsing the OpenAPI definition.
-        
+
         Returns:
             DynamicClient: A client with methods generated from the OpenAPI definition
         """
         # Load the OpenAPI definition
         await self.load_definition()
-        
+
         # Create HTTP session
         self.session = httpx.AsyncClient()
-        
-        # Extract base URL from the servers list if available
-        if 'servers' in self.definition and self.definition['servers']:
-            self.base_url = self.definition['servers'][0]['url']
-        
+
+        # Set base URL from the servers list if available
+        self.setup_base_url()
+
         # Create a dynamic client with methods based on the operations defined in the spec
         return await self.create_dynamic_client()
-    
+
     async def load_definition(self):
         """
         Load the OpenAPI definition from a URL, file, or dictionary.
@@ -51,7 +51,7 @@ class OpenAPIClient:
         if isinstance(self.definition_source, dict):
             self.definition = self.definition_source
             return
-        
+
         if os.path.isfile(str(self.definition_source)):
             # Load from file
             with open(self.definition_source, 'r') as f:
@@ -61,8 +61,9 @@ class OpenAPIClient:
                 else:
                     self.definition = json.loads(content)
             return
-        
+
         # Assume it's a URL
+        self.source_url = self.definition_source  # Store the source URL
         async with httpx.AsyncClient() as client:
             response = await client.get(self.definition_source)
             if response.status_code == 200:
@@ -73,7 +74,32 @@ class OpenAPIClient:
                     self.definition = response.json()
             else:
                 raise Exception(f"Failed to load OpenAPI definition: {response.status_code}")
-    
+
+    def setup_base_url(self):
+        """
+        Set up the base URL for API requests, handling various server URL formats.
+        """
+        if 'servers' in self.definition and self.definition['servers']:
+            server_url = self.definition['servers'][0]['url']
+
+            # Check if this is a full URL or just a path
+            parsed_url = urlparse(server_url)
+
+            # If it's a full URL (has scheme), use it directly
+            if parsed_url.scheme:
+                self.base_url = server_url
+            # If it's not a full URL and we loaded from a URL, combine them
+            elif self.source_url:
+                # Parse the source URL to get scheme, hostname, and port
+                source_parsed = urlparse(self.source_url)
+                base = f"{source_parsed.scheme}://{source_parsed.netloc}"
+
+                # Combine the base with the server path
+                self.base_url = urljoin(base, server_url)
+            else:
+                # Just use what we have
+                self.base_url = server_url
+
     async def create_dynamic_client(self):
         """
         Create a client with methods dynamically generated from the OpenAPI spec using metaprogramming.
@@ -93,7 +119,7 @@ class OpenAPIClient:
                     if operation_id:
                         # Create a method for this operation and capture it in the closure
                         method_func = self.create_operation_method(path, method, operation)
-                        
+
                         # Create a function with proper binding
                         def create_bound_method(func=method_func):
                             async def bound_method(*args, **kwargs):
@@ -104,27 +130,27 @@ class OpenAPIClient:
                             return bound_method
                         
                         methods_dict[operation_id] = create_bound_method()
-        
+
         # Create the dynamic client class with the methods
         DynamicClientClass = type('DynamicClient', (object,), methods_dict)
-        
+
         # Create an instance of this class
         client = DynamicClientClass()
-        
+
         # Store reference to the api
         client._api = self
-        
+
         return client
-    
+
     def create_operation_method(self, path, method, operation):
         """
         Create a method for an operation defined in the OpenAPI spec.
-        
+
         Args:
             path: The path template (e.g., "/pets/{petId}")
             method: The HTTP method (e.g., "get", "post")
             operation: The operation object from the OpenAPI spec
-        
+
         Returns:
             function: A method that performs the API request
         """
@@ -132,7 +158,7 @@ class OpenAPIClient:
             # Process path parameters
             url = path
             path_params = {}
-            
+
             # Extract parameters from operation definition
             parameters = operation.get('parameters', [])
             for param in parameters:
@@ -140,11 +166,11 @@ class OpenAPIClient:
                     name = param.get('name')
                     if name in kwargs:
                         path_params[name] = kwargs.pop(name)
-            
+
             # Replace path parameters in the URL
             for name, value in path_params.items():
                 url = url.replace(f"{{{name}}}", str(value))
-            
+
             # Build the full URL
             full_url = urljoin(self.base_url, url)
             
@@ -161,14 +187,16 @@ class OpenAPIClient:
             
             # Make the request
             headers = kwargs.pop('headers', {})
-            
-            response = await self.session.request(method, 
-                                               full_url, 
-                                               params=query_params, 
-                                               json=body, 
-                                               headers=headers,
-                                               **kwargs)
-            
+
+            response = await self.session.request(
+                method,
+                full_url,
+                params=query_params, 
+                json=body, 
+                headers=headers,
+                **kwargs
+            )
+
             if 'application/json' in response.headers.get('Content-Type', ''):
                 result = response.json()
             else:
