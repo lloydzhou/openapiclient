@@ -21,6 +21,11 @@ async def main():
         # Print the response
         print(f"Status code: {response['status']}")
         print(f"Pet data: {response['data']}")
+
+        # Call an operation using the generated method
+        response = await client('getPetById', petId=1)
+        print(f"Status code: {response['status']}")
+        print(f"Pet data: {response['data']}")
     finally:
         # Close the HTTP session
         await api.close()

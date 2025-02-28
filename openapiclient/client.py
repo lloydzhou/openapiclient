@@ -3,8 +3,6 @@ import json
 import os.path
 from urllib.parse import urljoin, urlparse
 import yaml
-import types
-import functools
 from nanoid import generate as nanoid_generate
 
 # Create a base class for DynamicClient
@@ -34,7 +32,7 @@ class DynamicClientBase:
         if not method or not callable(method):
             raise AttributeError(f"'{self.__class__.__name__}' has no callable method '{method_name}'")
 
-        return functools.partial(method, *args, **kwargs)
+        return method(*args, **kwargs)
 
 
 # Create the main OpenAPIClient class
