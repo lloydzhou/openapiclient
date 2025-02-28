@@ -16,6 +16,7 @@ setup(
     install_requires=[
         "httpx>=0.23.0",
         "pyyaml>=6.0",
+        "nanoid>=0.2.1",
     ],
     classifiers=[
         "Programming Language :: Python :: 3",

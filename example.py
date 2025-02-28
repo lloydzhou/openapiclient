@@ -10,6 +10,11 @@ async def main():
         client = await api.init()
         print("client", client, dir(client))
 
+        print("client.operations", client.operations)
+        print("client.paths", client.paths)
+        print("client.functions", client.functions)
+        print("client.tools", client.tools)
+
         # Call an operation using the generated method
         response = await client.getPetById(petId=1)
 
