@@ -1,0 +1,46 @@
+{
+    "openapi": "3.1.0",
+    "info": {
+      "description": "Fetches the text content from a personal website.",
+      "title": "Jina URL Content Reader",
+      "version": "v1.0.0"
+    },
+    "servers": [
+      {
+        "url": "https://r.jina.ai"
+      }
+    ],
+    "paths": {
+      "/{target_url}": {
+        "get": {
+          "description": "Retrieves the contents of a specified URL and converts it to LLM-friendly Markdown format.",
+          "operationId": "ReadUrlContent",
+          "parameters": [
+            {
+              "name": "target_url",
+              "in": "path",
+              "required": true,
+              "description": "The URL of the content to be read.",
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Successful Response",
+              "content": {
+                "text/plain": {
+                  "schema": {
+                    "type": "string",
+                    "description": "The content of the URL converted to LLM-friendly Markdown format."
+                  }
+                }
+              }
+            }
+          },
+          "summary": "Read the contents of a URL and convert to Markdown"
+        }
+      }
+    }
+  }
