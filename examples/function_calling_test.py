@@ -13,7 +13,7 @@ async def run_function_calling():
     
     # 初始化 API 客户端
     api = OpenAPIClient(
-        definition="https://ghfast.top/https://raw.githubusercontent.com/ChatGPTNextWeb/NextChat-Awesome-Plugins/refs/heads/main/plugins/jina-r/openapi.json"
+        definition="https://ghfast.top/https://raw.githubusercontent.com/lloydzhou/openapiclient/refs/heads/main/examples/jinareader.json"
     )
     
     try:
