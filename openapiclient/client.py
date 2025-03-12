@@ -101,6 +101,8 @@ class OpenAPIClient:
                 content_type = response.headers.get('Content-Type', '')
                 if 'yaml' in content_type or 'yml' in content_type:
                     self.definition = yaml.safe_load(response.text)
+                elif self.definition_source.endswith('.yaml') or self.definition_source.endswith('.yml'):
+                    self.definition = yaml.safe_load(response.text)
                 else:
                     self.definition = response.json()
             else:
