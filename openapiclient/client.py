@@ -337,13 +337,12 @@ class OpenAPIClient:
             operation_id = operation.get('operationId')
             path = operation.get('path')
             paths.append(path)
-            
+
             # Create the appropriate method type (async or sync)
-            if is_async:
-                methods_dict[operation_id] = self._create_async_operation_method(client_instance, path, operation.get('method'), operation)
-            else:
-                methods_dict[operation_id] = self._create_sync_operation_method(client_instance, path, operation.get('method'), operation)
-                
+            methods_dict[operation_id] = self._create_operation_method(
+                client_instance, path, operation.get('method'), operation, is_async
+            )
+
             tools[operation_id] = self.create_tool(operation_id, operation, all_references)
 
         # Generate class name
@@ -364,9 +363,142 @@ class OpenAPIClient:
 
         # Create an instance of this class
         client = DynamicClientClass()
-        
+
         # Return the client
         return client
+
+    def _prepare_request_params(self, path, operation, kwargs):
+        """
+        Prepare request parameters for an API operation.
+
+        Args:
+            path: The path template
+            operation: Operation object
+            kwargs: Keyword arguments passed to the operation
+
+        Returns:
+            tuple: (full_url, query_params, body, headers, remaining_kwargs)
+        """
+        # Process path parameters
+        url = path
+        path_params = {}
+
+        # Extract parameters from operation definition
+        parameters = operation.get('parameters', [])
+        for param in parameters:
+            if param.get('in') == 'path':
+                name = param.get('name')
+                if name in kwargs:
+                    path_params[name] = kwargs.pop(name)
+
+        # Replace path parameters in the URL
+        for name, value in path_params.items():
+            url = url.replace(f"{{{name}}}", str(value))
+
+        # Build the full URL
+        full_url = urljoin(self.base_url, url)
+
+        # Handle query parameters
+        query_params = {}
+        for param in parameters:
+            if param.get('in') == 'query':
+                name = param.get('name')
+                if name in kwargs:
+                    query_params[name] = kwargs.pop(name)
+
+        # Handle headers
+        headers = kwargs.pop('headers', {})
+
+        # Handle request body
+        body = kwargs.pop('data', None) or kwargs.pop('body', None)
+        # json body
+        if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}).get('application/json'):
+            body = kwargs.copy()
+            kwargs.clear()  # Clear the kwargs after using them as body
+
+        return full_url, query_params, body, headers, kwargs
+
+    def _process_response(self, response):
+        """
+        Process response and return a standardized format.
+
+        Args:
+            response: HTTP response
+
+        Returns:
+            dict: Formatted response object
+        """
+        if 'application/json' in response.headers.get('Content-Type', ''):
+            result = response.json()
+        else:
+            result = response.text
+
+        # Create response object similar to axios
+        return {
+            'data': result,
+            'status': response.status_code,
+            'headers': dict(response.headers),
+            'config': {}  # Original config dict is no longer available here
+        }
+
+    def _create_operation_method(self, client_instance, path, method, operation, is_async=False):
+        """
+        Create an operation method (either async or sync) for the OpenAPI spec.
+        
+        Args:
+            client_instance: The client instance
+            path: The path template
+            method: The HTTP method
+            operation: The operation object
+            is_async: Whether to create an async method
+            
+        Returns:
+            function: A method that performs the operation
+        """
+        if is_async:
+            async def operation_method(*args, **kwargs):
+                # Prepare request parameters
+                full_url, query_params, body, headers, remaining_kwargs = self._prepare_request_params(
+                    path, operation, kwargs.copy()
+                )
+
+                # Make the async request
+                response = await client_instance.session.request(
+                    method,
+                    full_url,
+                    params=query_params, 
+                    json=body, 
+                    headers=headers,
+                    **remaining_kwargs
+                )
+
+                # Process the response
+                return self._process_response(response)
+        else:
+            def operation_method(*args, **kwargs):
+                # Prepare request parameters
+                full_url, query_params, body, headers, remaining_kwargs = self._prepare_request_params(
+                    path, operation, kwargs.copy()
+                )
+
+                # Make the sync request
+                response = client_instance.session.request(
+                    method,
+                    full_url,
+                    params=query_params, 
+                    json=body, 
+                    headers=headers,
+                    **remaining_kwargs
+                )
+
+                # Process the response
+                return self._process_response(response)
+
+        # Set method metadata
+        operation_method.__name__ = operation.get('operationId', '')
+        operation_method.__doc__ = operation.get('summary', '') + "\n\n" + operation.get('description', '')
+
+        return operation_method
 
     def _generate_client_class_name(self):
         """Generate a class name based on the API info"""
@@ -382,137 +514,3 @@ class OpenAPIClient:
         # Replace spaces, hyphens, dots and other special characters
         class_name = ''.join(c for c in class_name if c.isalnum())
         return class_name
-
-    def _create_async_operation_method(self, client_instance, path, method, operation):
-        """
-        Create an async method for an operation defined in the OpenAPI spec.
-        """
-        async def operation_method(*args, **kwargs):
-            # Process path parameters
-            url = path
-            path_params = {}
-
-            # Extract parameters from operation definition
-            parameters = operation.get('parameters', [])
-            for param in parameters:
-                if param.get('in') == 'path':
-                    name = param.get('name')
-                    if name in kwargs:
-                        path_params[name] = kwargs.pop(name)
-
-            # Replace path parameters in the URL
-            for name, value in path_params.items():
-                url = url.replace(f"{{{name}}}", str(value))
-
-            # Build the full URL
-            full_url = urljoin(self.base_url, url)
-            
-            # Handle query parameters
-            query_params = {}
-            for param in parameters:
-                if param.get('in') == 'query':
-                    name = param.get('name')
-                    if name in kwargs:
-                        query_params[name] = kwargs.pop(name)
-
-            # Make the request
-            headers = kwargs.pop('headers', {})
-
-            # Handle request body
-            body = kwargs.pop('data', None) or kwargs.pop('body', None)
-            # json body
-            if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}).get('application/json'):
-                body = kwargs
-
-            response = await client_instance.session.request(
-                method,
-                full_url,
-                params=query_params, 
-                json=body, 
-                headers=headers,
-                **kwargs
-            )
-
-            if 'application/json' in response.headers.get('Content-Type', ''):
-                result = response.json()
-            else:
-                result = response.text
-            
-            # Create response object similar to axios
-            return {
-                'data': result,
-                'status': response.status_code,
-                'headers': dict(response.headers),
-                'config': kwargs
-            }
-        
-        operation_method.__name__ = operation.get('operationId', '')
-        operation_method.__doc__ = operation.get('summary', '') + "\n\n" + operation.get('description', '')
-        return operation_method
-
-    def _create_sync_operation_method(self, client_instance, path, method, operation):
-        """
-        Create a synchronous method for an operation defined in the OpenAPI spec.
-        """
-        def operation_method(*args, **kwargs):
-            # Process path parameters
-            url = path
-            path_params = {}
-
-            # Extract parameters from operation definition
-            parameters = operation.get('parameters', [])
-            for param in parameters:
-                if param.get('in') == 'path':
-                    name = param.get('name')
-                    if name in kwargs:
-                        path_params[name] = kwargs.pop(name)
-
-            # Replace path parameters in the URL
-            for name, value in path_params.items():
-                url = url.replace(f"{{{name}}}", str(value))
-
-            # Build the full URL
-            full_url = urljoin(self.base_url, url)
-            
-            # Handle query parameters
-            query_params = {}
-            for param in parameters:
-                if param.get('in') == 'query':
-                    name = param.get('name')
-                    if name in kwargs:
-                        query_params[name] = kwargs.pop(name)
-
-            # Make the request
-            headers = kwargs.pop('headers', {})
-
-            # Handle request body
-            body = kwargs.pop('data', None) or kwargs.pop('body', None)
-            # json body
-            if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}).get('application/json'):
-                body = kwargs
-
-            response = client_instance.session.request(
-                method,
-                full_url,
-                params=query_params, 
-                json=body, 
-                headers=headers,
-                **kwargs
-            )
-
-            if 'application/json' in response.headers.get('Content-Type', ''):
-                result = response.json()
-            else:
-                result = response.text
-            
-            # Create response object similar to axios
-            return {
-                'data': result,
-                'status': response.status_code,
-                'headers': dict(response.headers),
-                'config': kwargs
-            }
-        
-        operation_method.__name__ = operation.get('operationId', '')
-        operation_method.__doc__ = operation.get('summary', '') + "\n\n" + operation.get('description', '')
-        return operation_method
