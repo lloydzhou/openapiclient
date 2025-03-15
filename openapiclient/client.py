@@ -6,8 +6,17 @@ from urllib.parse import urljoin, urlparse
 import yaml
 from nanoid import generate as nanoid_generate
 
-# Create a base class for DynamicClient
-class DynamicClientBase:
+# 合并DynamicClientBase和BaseClient为一个基类
+class BaseClient:
+    """Base class for OpenAPI clients with common functionality"""
+
+    def __init__(self, api, **kwargs):
+        """Initialize the base client"""
+        self.api = api
+        self.session = None
+        self.operations = []
+        self.paths = []
+        self.tools = []
 
     @property
     def functions(self):
@@ -35,15 +44,6 @@ class DynamicClientBase:
 
         return method(*args, **kwargs)
 
-
-class BaseClient:
-    """Base class for OpenAPI clients with common functionality"""
-    
-    def __init__(self, api, session=None):
-        self.api = api
-        self.session = session
-        self.client = None
-
     def setup_base_url(self):
         """Set up the base URL for API requests"""
         if 'servers' in self.api.definition and self.api.definition['servers']:
@@ -60,24 +60,27 @@ class BaseClient:
             else:
                 self.api.base_url = server_url
 
-
 class Client(BaseClient):
-    """Synchronous OpenAPI client"""
-    
+    """
+    Synchronous OpenAPI client with dynamically generated methods.
+    Acts as both the client and the container for API operations.
+    """
+
     def __init__(self, api, **kwargs):
+        """Initialize the sync client"""
         super().__init__(api)
-        self.session = httpx.Client(**kwargs) if not self.session else self.session
-        self.client = None
-        
+        self.session = httpx.Client(**kwargs)
+
     def __enter__(self):
         """Enter context manager and initialize the client"""
         if not self.api.definition:
             self.api._load_definition_sync()
             
         self.setup_base_url()
-        self.client = self.api._create_client(self, is_async=False)
-        return self.client
-        
+        # Generate methods directly on this instance
+        self.api._generate_client_methods(self, is_async=False)
+        return self
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit context manager and close resources"""
         if self.session:
@@ -85,22 +88,26 @@ class Client(BaseClient):
 
 
 class AsyncClient(BaseClient):
-    """Asynchronous OpenAPI client"""
-    
+    """
+    Asynchronous OpenAPI client with dynamically generated methods.
+    Acts as both the client and the container for API operations.
+    """
+
     def __init__(self, api, **kwargs):
+        """Initialize the async client"""
         super().__init__(api)
-        self.session = httpx.AsyncClient(**kwargs) if not self.session else self.session
-        self.client = None
-        
+        self.session = httpx.AsyncClient(**kwargs)
+
     async def __aenter__(self):
         """Enter async context manager and initialize the client"""
         if not self.api.definition:
             await self.api._load_definition_async()
-            
+
         self.setup_base_url()
-        self.client = self.api._create_client(self, is_async=True)
-        return self.client
-        
+        # Generate methods directly on this instance
+        self.api._generate_client_methods(self, is_async=True)
+        return self
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """Exit async context manager and close resources"""
         if self.session:
@@ -311,61 +318,55 @@ class OpenAPIClient:
             }
         }
 
-    def _create_client(self, client_instance, is_async=False):
+    def _generate_client_methods(self, client_instance, is_async=False):
         """
-        Create a client with dynamically generated methods from the OpenAPI spec.
-        
+        Generate methods directly on the client instance from the OpenAPI spec.
+
         Args:
-            client_instance: The client instance (AsyncClient or Client)
+            client_instance: The client instance to add methods to
             is_async: Whether to create async or sync methods
-            
-        Returns:
-            DynamicClient: A client with methods for each operation in the spec
         """
         # Set up references dictionary
         all_references = {f'#/components/schemas/{name}': schema for name, schema in 
                         self.definition.get('components', {}).get('schemas', {}).items()}
-        
+
         # Resolve all references
         for name, schema in all_references.items():
             schema = self.resolve_schema_ref(schema, all_references)
             all_references[name] = schema
-        
+
         # Create methods, paths and tools
-        paths, tools, methods_dict = [], {}, {}
+        paths, tools = [], []
+        operations_list = []
+
         for operation in self.get_operations():
             operation_id = operation.get('operationId')
+            if not operation_id:
+                continue
+
             path = operation.get('path')
             paths.append(path)
 
-            # Create the appropriate method type (async or sync)
-            methods_dict[operation_id] = self._create_operation_method(
-                client_instance, path, operation.get('method'), operation, is_async
+            # Create and attach the method to the client instance
+            method_obj = self._create_operation_method(
+                client_instance, 
+                path, 
+                operation.get('method'), 
+                operation, 
+                is_async
             )
 
-            tools[operation_id] = self.create_tool(operation_id, operation, all_references)
+            # Set the method on the client instance
+            setattr(client_instance, operation_id, method_obj)
+            operations_list.append(operation_id)
 
-        # Generate class name
-        class_name = self._generate_client_class_name()
+            # Create tool definition
+            tools.append(self.create_tool(operation_id, operation, all_references))
 
-        # Create dynamic class attributes
-        attribute_dict = {
-            **methods_dict,
-            'operations': list(methods_dict.keys()),
-            'paths': paths,
-            'tools': list(tools.values()),
-            '_api': self,  # Store reference to the api
-            '_client': client_instance,  # Store reference to the client
-        }
-        
-        # Create the dynamic client class
-        DynamicClientClass = type(class_name, (DynamicClientBase,), attribute_dict)
-
-        # Create an instance of this class
-        client = DynamicClientClass()
-
-        # Return the client
-        return client
+        # Set the client attributes
+        client_instance.operations = operations_list
+        client_instance.paths = paths
+        client_instance.tools = tools
 
     def _prepare_request_params(self, path, operation, kwargs):
         """
@@ -499,18 +500,3 @@ class OpenAPIClient:
         operation_method.__doc__ = operation.get('summary', '') + "\n\n" + operation.get('description', '')
 
         return operation_method
-
-    def _generate_client_class_name(self):
-        """Generate a class name based on the API info"""
-        api_title = self.definition.get('info', {}).get('title', '')
-        api_version = self.definition.get('info', {}).get('version', '')
-
-        if api_title:
-            class_name = f"{api_title}Client_{api_version}" if api_version else f"{api_title}Client"
-        else:
-            # Fallback to a random suffix
-            class_name = f"DynamicClient_{nanoid_generate(size=8)}"
-
-        # Replace spaces, hyphens, dots and other special characters
-        class_name = ''.join(c for c in class_name if c.isalnum())
-        return class_name
