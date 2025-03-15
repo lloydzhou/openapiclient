@@ -1,4 +1,4 @@
-from openapiclient.client import OpenAPIClient
+from openapiclient import OpenAPIClient
 import asyncio
 
 
