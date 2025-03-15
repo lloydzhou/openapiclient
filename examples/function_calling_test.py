@@ -16,10 +16,9 @@ async def run_function_calling():
         definition="https://ghfast.top/https://raw.githubusercontent.com/lloydzhou/openapiclient/refs/heads/main/examples/jinareader.json"
     )
     
-    try:
-        # 获取动态生成的客户端
-        api_client = await api.init()
-        
+    # 获取动态生成的客户端
+    async with api.AsyncClient() as api_client:
+
         # 构建函数工具列表
         tools = api_client.tools
         
@@ -75,8 +74,6 @@ async def run_function_calling():
             print("\nOpenAI 最终回复:")
             print(final_response.choices[0].message.content)
             
-    finally:
-        await api.close()
 
 if __name__ == "__main__":
     asyncio.run(run_function_calling())
