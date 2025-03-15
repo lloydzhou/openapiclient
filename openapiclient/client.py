@@ -36,11 +36,93 @@ class DynamicClientBase:
         return method(*args, **kwargs)
 
 
-# Create the OpenAPIClient class
+class BaseClient:
+    """Base class for OpenAPI clients with common functionality"""
+    
+    def __init__(self, api, session=None):
+        self.api = api
+        self.session = session
+        self.client = None
+
+    def setup_base_url(self):
+        """Set up the base URL for API requests"""
+        if 'servers' in self.api.definition and self.api.definition['servers']:
+            server_url = self.api.definition['servers'][0]['url']
+            
+            parsed_url = urlparse(server_url)
+            
+            if parsed_url.scheme:
+                self.api.base_url = server_url
+            elif self.api.source_url:
+                source_parsed = urlparse(self.api.source_url)
+                base = f"{source_parsed.scheme}://{source_parsed.netloc}"
+                self.api.base_url = urljoin(base, server_url)
+            else:
+                self.api.base_url = server_url
+
+
+class Client(BaseClient):
+    """Synchronous OpenAPI client"""
+    
+    def __init__(self, api, **kwargs):
+        super().__init__(api)
+        self.session = httpx.Client(**kwargs) if not self.session else self.session
+        self.client = None
+        
+    def __enter__(self):
+        """Enter context manager and initialize the client"""
+        if not self.api.definition:
+            self.api._load_definition_sync()
+            
+        self.setup_base_url()
+        self.client = self.api._create_client(self, is_async=False)
+        return self.client
+        
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Exit context manager and close resources"""
+        if self.session:
+            self.session.close()
+
+
+class AsyncClient(BaseClient):
+    """Asynchronous OpenAPI client"""
+    
+    def __init__(self, api, **kwargs):
+        super().__init__(api)
+        self.session = httpx.AsyncClient(**kwargs) if not self.session else self.session
+        self.client = None
+        
+    async def __aenter__(self):
+        """Enter async context manager and initialize the client"""
+        if not self.api.definition:
+            await self.api._load_definition_async()
+            
+        self.setup_base_url()
+        self.client = self.api._create_client(self, is_async=True)
+        return self.client
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Exit async context manager and close resources"""
+        if self.session:
+            await self.session.aclose()
+
+
+# Create the main OpenAPIClient class as a factory
 class OpenAPIClient:
     """
     A Python client for OpenAPI specifications, inspired by openapi-client-axios.
     Uses httpx for HTTP requests and supports both synchronous and asynchronous operations.
+    
+    Usage:
+        api = OpenAPIClient(definition_url)
+        
+        # Synchronous usage
+        with api.Client() as client:
+            result = client.operation_name(param1=value)
+            
+        # Asynchronous usage
+        async with api.AsyncClient() as client:
+            result = await client.operation_name(param1=value)
     """
 
     def __init__(self, definition=None):
@@ -52,74 +134,61 @@ class OpenAPIClient:
         """
         self.definition_source = definition
         self.definition = {}
-        self.client = None
         self.base_url = ''
-        self.session = None
         self.source_url = None  # Store the source URL if loaded from a URL
-        self._is_async = False  # Flag to track if we're in async mode
 
-    async def init(self):
+    def Client(self, **kwargs):
         """
-        Initialize the client asynchronously by loading and parsing the OpenAPI definition.
-        Returns a client with asynchronous operation methods.
-
-        Returns:
-            DynamicClient: A client with async methods generated from the OpenAPI definition
-        """
-        # Set async flag
-        self._is_async = True
+        Create a synchronous client instance that can be used as a context manager.
         
-        # Load the OpenAPI definition asynchronously
-        await self._load_definition_async()
-
-        # Create HTTP session
-        self.session = httpx.AsyncClient()
-
-        # Set base URL from the servers list if available
-        self.setup_base_url()
-
-        # Create a dynamic client with methods based on the operations defined in the spec
-        return await self._create_dynamic_client()
-
-    def init_sync(self):
-        """
-        Initialize the client synchronously by loading and parsing the OpenAPI definition.
-        Returns a client with synchronous operation methods.
-
+        Args:
+            **kwargs: Additional arguments to pass to httpx.Client
+            
         Returns:
-            DynamicClient: A client with sync methods generated from the OpenAPI definition
+            Client: A synchronous client
         """
-        # Set async flag to False
-        self._is_async = False
+        return Client(self, **kwargs)
         
-        # Load the OpenAPI definition synchronously
-        self._load_definition_sync()
+    def AsyncClient(self, **kwargs):
+        """
+        Create an asynchronous client instance that can be used as a context manager.
+        
+        Args:
+            **kwargs: Additional arguments to pass to httpx.AsyncClient
+            
+        Returns:
+            AsyncClient: An asynchronous client
+        """
+        return AsyncClient(self, **kwargs)
 
-        # Create HTTP session
-        self.session = httpx.Client()
+    def _process_file_definition(self):
+        """Process definition from a file source"""
+        with open(self.definition_source, 'r') as f:
+            content = f.read()
+            if self.definition_source.endswith('.yaml') or self.definition_source.endswith('.yml'):
+                self.definition = yaml.safe_load(content)
+            else:
+                self.definition = json.loads(content)
 
-        # Set base URL from the servers list if available
-        self.setup_base_url()
-
-        # Create a dynamic client with methods based on the operations defined in the spec
-        return self._create_dynamic_client_sync()
+    def _process_definition_response(self, response):
+        """Process HTTP response and extract OpenAPI definition"""
+        content_type = response.headers.get('Content-Type', '')
+        if 'yaml' in content_type or 'yml' in content_type:
+            self.definition = yaml.safe_load(response.text)
+        elif self.definition_source.endswith('.yaml') or self.definition_source.endswith('.yml'):
+            self.definition = yaml.safe_load(response.text)
+        else:
+            self.definition = response.json()
 
     async def _load_definition_async(self):
-        """
-        Load the OpenAPI definition asynchronously from a URL, file, or dictionary.
-        """
+        """Load the OpenAPI definition asynchronously"""
         if isinstance(self.definition_source, dict):
             self.definition = self.definition_source
             return
 
         if os.path.isfile(str(self.definition_source)):
             # Load from file
-            with open(self.definition_source, 'r') as f:
-                content = f.read()
-                if self.definition_source.endswith('.yaml') or self.definition_source.endswith('.yml'):
-                    self.definition = yaml.safe_load(content)
-                else:
-                    self.definition = json.loads(content)
+            self._process_file_definition()
             return
 
         # Assume it's a URL
@@ -127,32 +196,19 @@ class OpenAPIClient:
         async with httpx.AsyncClient() as client:
             response = await client.get(self.definition_source)
             if response.status_code == 200:
-                content_type = response.headers.get('Content-Type', '')
-                if 'yaml' in content_type or 'yml' in content_type:
-                    self.definition = yaml.safe_load(response.text)
-                elif self.definition_source.endswith('.yaml') or self.definition_source.endswith('.yml'):
-                    self.definition = yaml.safe_load(response.text)
-                else:
-                    self.definition = response.json()
+                self._process_definition_response(response)
             else:
                 raise Exception(f"Failed to load OpenAPI definition: {response.status_code}")
 
     def _load_definition_sync(self):
-        """
-        Load the OpenAPI definition synchronously from a URL, file, or dictionary.
-        """
+        """Load the OpenAPI definition synchronously"""
         if isinstance(self.definition_source, dict):
             self.definition = self.definition_source
             return
 
         if os.path.isfile(str(self.definition_source)):
             # Load from file
-            with open(self.definition_source, 'r') as f:
-                content = f.read()
-                if self.definition_source.endswith('.yaml') or self.definition_source.endswith('.yml'):
-                    self.definition = yaml.safe_load(content)
-                else:
-                    self.definition = json.loads(content)
+            self._process_file_definition()
             return
 
         # Assume it's a URL
@@ -160,45 +216,13 @@ class OpenAPIClient:
         with httpx.Client() as client:
             response = client.get(self.definition_source)
             if response.status_code == 200:
-                content_type = response.headers.get('Content-Type', '')
-                if 'yaml' in content_type or 'yml' in content_type:
-                    self.definition = yaml.safe_load(response.text)
-                elif self.definition_source.endswith('.yaml') or self.definition_source.endswith('.yml'):
-                    self.definition = yaml.safe_load(response.text)
-                else:
-                    self.definition = response.json()
+                self._process_definition_response(response)
             else:
                 raise Exception(f"Failed to load OpenAPI definition: {response.status_code}")
-
-    def setup_base_url(self):
-        """
-        Set up the base URL for API requests, handling various server URL formats.
-        """
-        if 'servers' in self.definition and self.definition['servers']:
-            server_url = self.definition['servers'][0]['url']
-
-            # Check if this is a full URL or just a path
-            parsed_url = urlparse(server_url)
-
-            # If it's a full URL (has scheme), use it directly
-            if parsed_url.scheme:
-                self.base_url = server_url
-            # If it's not a full URL and we loaded from a URL, combine them
-            elif self.source_url:
-                # Parse the source URL to get scheme, hostname, and port
-                source_parsed = urlparse(self.source_url)
-                base = f"{source_parsed.scheme}://{source_parsed.netloc}"
-
-                # Combine the base with the server path
-                self.base_url = urljoin(base, server_url)
-            else:
-                # Just use what we have
-                self.base_url = server_url
 
     def get_operations(self):
         """
         Extract all operations from the OpenAPI definition.
-        # https://github.com/openapistack/openapi-client-axios/blob/main/packages/openapi-client-axios/src/client.ts#L581
 
         Returns:
             list: A list of operation objects with normalized properties.
@@ -287,16 +311,20 @@ class OpenAPIClient:
             }
         }
 
-    async def _create_dynamic_client(self):
+    def _create_client(self, client_instance, is_async=False):
         """
-        Create an asynchronous client with methods dynamically generated from the OpenAPI spec.
+        Create a client with dynamically generated methods from the OpenAPI spec.
         
+        Args:
+            client_instance: The client instance (AsyncClient or Client)
+            is_async: Whether to create async or sync methods
+            
         Returns:
-            DynamicClient: A client with async methods for each operation in the spec
+            DynamicClient: A client with methods for each operation in the spec
         """
         # Set up references dictionary
         all_references = {f'#/components/schemas/{name}': schema for name, schema in 
-                         self.definition.get('components', {}).get('schemas', {}).items()}
+                        self.definition.get('components', {}).get('schemas', {}).items()}
         
         # Resolve all references
         for name, schema in all_references.items():
@@ -309,7 +337,13 @@ class OpenAPIClient:
             operation_id = operation.get('operationId')
             path = operation.get('path')
             paths.append(path)
-            methods_dict[operation_id] = self._create_async_operation_method(path, operation.get('method'), operation)
+            
+            # Create the appropriate method type (async or sync)
+            if is_async:
+                methods_dict[operation_id] = self._create_async_operation_method(client_instance, path, operation.get('method'), operation)
+            else:
+                methods_dict[operation_id] = self._create_sync_operation_method(client_instance, path, operation.get('method'), operation)
+                
             tools[operation_id] = self.create_tool(operation_id, operation, all_references)
 
         # Generate class name
@@ -322,6 +356,7 @@ class OpenAPIClient:
             'paths': paths,
             'tools': list(tools.values()),
             '_api': self,  # Store reference to the api
+            '_client': client_instance,  # Store reference to the client
         }
         
         # Create the dynamic client class
@@ -329,50 +364,8 @@ class OpenAPIClient:
 
         # Create an instance of this class
         client = DynamicClientClass()
-        return client
-
-    def _create_dynamic_client_sync(self):
-        """
-        Create a synchronous client with methods dynamically generated from the OpenAPI spec.
         
-        Returns:
-            DynamicClient: A client with sync methods for each operation in the spec
-        """
-        # Set up references dictionary
-        all_references = {f'#/components/schemas/{name}': schema for name, schema in 
-                         self.definition.get('components', {}).get('schemas', {}).items()}
-        
-        # Resolve all references
-        for name, schema in all_references.items():
-            schema = self.resolve_schema_ref(schema, all_references)
-            all_references[name] = schema
-        
-        # Create methods, paths and tools
-        paths, tools, methods_dict = [], {}, {}
-        for operation in self.get_operations():
-            operation_id = operation.get('operationId')
-            path = operation.get('path')
-            paths.append(path)
-            methods_dict[operation_id] = self._create_sync_operation_method(path, operation.get('method'), operation)
-            tools[operation_id] = self.create_tool(operation_id, operation, all_references)
-
-        # Generate class name
-        class_name = self._generate_client_class_name()
-
-        # Create dynamic class attributes
-        attribute_dict = {
-            **methods_dict,
-            'operations': list(methods_dict.keys()),
-            'paths': paths,
-            'tools': list(tools.values()),
-            '_api': self,  # Store reference to the api
-        }
-        
-        # Create the dynamic client class
-        DynamicClientClass = type(class_name, (DynamicClientBase,), attribute_dict)
-
-        # Create an instance of this class
-        client = DynamicClientClass()
+        # Return the client
         return client
 
     def _generate_client_class_name(self):
@@ -390,7 +383,7 @@ class OpenAPIClient:
         class_name = ''.join(c for c in class_name if c.isalnum())
         return class_name
 
-    def _create_async_operation_method(self, path, method, operation):
+    def _create_async_operation_method(self, client_instance, path, method, operation):
         """
         Create an async method for an operation defined in the OpenAPI spec.
         """
@@ -431,7 +424,7 @@ class OpenAPIClient:
             if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}).get('application/json'):
                 body = kwargs
 
-            response = await self.session.request(
+            response = await client_instance.session.request(
                 method,
                 full_url,
                 params=query_params, 
@@ -457,7 +450,7 @@ class OpenAPIClient:
         operation_method.__doc__ = operation.get('summary', '') + "\n\n" + operation.get('description', '')
         return operation_method
 
-    def _create_sync_operation_method(self, path, method, operation):
+    def _create_sync_operation_method(self, client_instance, path, method, operation):
         """
         Create a synchronous method for an operation defined in the OpenAPI spec.
         """
@@ -498,7 +491,7 @@ class OpenAPIClient:
             if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}).get('application/json'):
                 body = kwargs
 
-            response = self.session.request(
+            response = client_instance.session.request(
                 method,
                 full_url,
                 params=query_params, 
@@ -523,11 +516,3 @@ class OpenAPIClient:
         operation_method.__name__ = operation.get('operationId', '')
         operation_method.__doc__ = operation.get('summary', '') + "\n\n" + operation.get('description', '')
         return operation_method
-
-    async def close(self):
-        """Close the HTTP session if it's an async session."""
-        if self.session:
-            if self._is_async:
-                await self.session.aclose()
-            else:
-                self.session.close()
