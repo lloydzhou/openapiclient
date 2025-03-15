@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name="openapi-httpx-client",
-    version="0.3.1",
+    version="0.4.0",
     author="lloydzhou",
     author_email="lloydzhou@qq.com",
     description="A Python client for OpenAPI specifications using httpx",
