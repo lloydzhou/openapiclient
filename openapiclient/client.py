@@ -1,10 +1,8 @@
 import httpx
 import json
 import os.path
-from typing import Dict, List, Any, Optional, Union, Callable, Type
 from urllib.parse import urljoin, urlparse
 import yaml
-from nanoid import generate as nanoid_generate
 
 # 合并DynamicClientBase和BaseClient为一个基类
 class BaseClient:
@@ -189,6 +187,10 @@ class OpenAPIClient:
 
     async def _load_definition_async(self):
         """Load the OpenAPI definition asynchronously"""
+        # Check if definition is already loaded
+        if self.definition:
+            return
+
         if isinstance(self.definition_source, dict):
             self.definition = self.definition_source
             return
@@ -209,6 +211,10 @@ class OpenAPIClient:
 
     def _load_definition_sync(self):
         """Load the OpenAPI definition synchronously"""
+        # Check if definition is already loaded
+        if self.definition:
+            return
+
         if isinstance(self.definition_source, dict):
             self.definition = self.definition_source
             return
