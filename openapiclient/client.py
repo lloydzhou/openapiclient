@@ -375,7 +375,7 @@ class OpenAPIClient:
         client_instance.paths = paths
         client_instance.tools = tools
 
-    def _prepare_request_params(self, path, operation, kwargs):
+    def _prepare_request_params(self, path, operation, args, kwargs):
         """
         Prepare request parameters for an API operation.
 
@@ -398,6 +398,8 @@ class OpenAPIClient:
                 name = param.get('name')
                 if name in kwargs:
                     path_params[name] = kwargs.pop(name)
+                elif len(args) > 0:
+                    path_params[name] = args.pop(0)  # Pop the first positional argument
 
         # Replace path parameters in the URL
         for name, value in path_params.items():
@@ -413,6 +415,8 @@ class OpenAPIClient:
                 name = param.get('name')
                 if name in kwargs:
                     query_params[name] = kwargs.pop(name)
+                elif len(args) > 0:
+                    query_params[name] = args.pop(0)  # Pop the first positional argument
 
         # Handle headers
         headers = kwargs.pop('headers', {})
@@ -467,7 +471,7 @@ class OpenAPIClient:
             async def operation_method(*args, **kwargs):
                 # Prepare request parameters
                 full_url, query_params, body, headers, remaining_kwargs = self._prepare_request_params(
-                    path, operation, kwargs.copy()
+                    path, operation, args, kwargs.copy()
                 )
 
                 # Make the async request
@@ -486,7 +490,7 @@ class OpenAPIClient:
             def operation_method(*args, **kwargs):
                 # Prepare request parameters
                 full_url, query_params, body, headers, remaining_kwargs = self._prepare_request_params(
-                    path, operation, kwargs.copy()
+                    path, operation, args, kwargs.copy()
                 )
 
                 # Make the sync request

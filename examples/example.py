@@ -14,10 +14,14 @@ async def main():
             print("client.tools", client.tools)
             # Call an operation using the generated method
             response = client.getPetById(petId=1)
-
             # Print the response
             print(f"Status code: {response['status']}")
             print(f"Pet data: {response['data']}")
+
+            # Call an operation using the generated method, using positional arguments
+            response = client.getPetById(1)
+            print(f"Status code (using positional arguments): {response['status']}")
+            print(f"Pet data (using positional arguments): {response['data']}")
 
             # Call an operation using the generated method
             response = client('getPetById', petId=1)

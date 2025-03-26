@@ -32,6 +32,11 @@ async def main():
         pet = await client.getPetById(petId=1)
         print(f"Status: {pet['status']}")
         print(f"Pet data: {pet['data']}")
+
+        # Call operations directly as methods, using positional arguments, can using in path and query
+        pet = await client.getPetById(1)
+        print(f"Status: {pet['status']}")
+        print(f"Pet data: {pet['data']}")
         
         # Alternative way to call methods
         pet = await client("getPetById", petId=2)
