@@ -289,38 +289,39 @@ class OpenAPIClient:
 
     def create_tool(self, operation_id, operation, all_references):
         """Create an AI tool description from operation data"""
-        # Get parameters from the request body schema only for json content
+        # Get parameters from the request body schema
         body = operation.get('requestBody', {})
-        schema = body.get('content', {}).get('application/json', {}).get('schema', {})
-        parameters = {
-            "type": "object",
-            "required": ['body'] if body.get("required", False) else [],
-            "description": body.get('description', ''),
-            "properties": {
-                "body": self.resolve_schema_ref(schema, all_references) if schema else {},
-            }
-        }
+        content = body.get('content', {})
+        schema = content.get('application/json', {}).get('schema', {}) or content.get('application/xml', {}).get('schema', {}) or content.get('application/x-www-form-urlencoded', {}).get('schema', {})
+        json_schema = self.resolve_schema_ref(schema, all_references) if schema else { "type": "object", "properties": {} }
+
         # add parameters from path and query
         for parameter in operation.get('parameters', []):
+            if not json_schema.get('required'):
+                json_schema['required'] = []
+            if not json_schema.get('properties'):
+                json_schema['properties'] = {}
+
             name = parameter.get('name')
             if parameter.get('required', False):
-                parameters["required"].append(name)
-            item = {
+                json_schema["required"].append(name)
+
+            parameter_schema = {
                 "type": parameter.get('schema', {}).get('type', 'string'),
                 "description": parameter.get('description', ''),
             }
             # Add format, enum, and example if available
             for key in ['format', 'enum', 'example']:
                 if parameter.get('schema', {}).get(key):
-                    item[key] = parameter.get('schema', {}).get(key)
-            parameters["properties"][name] = item
+                    parameter_schema[key] = parameter.get('schema', {}).get(key)
+            json_schema["properties"][name] = parameter_schema
 
         return {
             "type": "function",
             "function": {
                 "name": operation_id,
                 "description": operation.get('summary', '') or operation.get('description', ''),
-                "parameters": parameters,
+                "parameters": json_schema,
             }
         }
 
@@ -419,7 +420,7 @@ class OpenAPIClient:
         # Handle request body
         body = kwargs.pop('data', None) or kwargs.pop('body', None)
         # json body
-        if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}).get('application/json'):
+        if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}):
             body = kwargs.copy()
             kwargs.clear()  # Clear the kwargs after using them as body
 
