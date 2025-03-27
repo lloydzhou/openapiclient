@@ -386,6 +386,7 @@ class OpenAPIClient:
         Args:
             path: The path template
             operation: Operation object
+            args: Positional arguments passed to the operation
             kwargs: Keyword arguments passed to the operation
 
         Returns:
