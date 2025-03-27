@@ -289,38 +289,43 @@ class OpenAPIClient:
 
     def create_tool(self, operation_id, operation, all_references):
         """Create an AI tool description from operation data"""
-        # Get parameters from the request body schema only for json content
+        # Get parameters from the request body schema
         body = operation.get('requestBody', {})
-        schema = body.get('content', {}).get('application/json', {}).get('schema', {})
-        parameters = {
-            "type": "object",
-            "required": ['body'] if body.get("required", False) else [],
-            "description": body.get('description', ''),
-            "properties": {
-                "body": self.resolve_schema_ref(schema, all_references) if schema else {},
-            }
-        }
+        content = body.get('content', {})
+        schema = content.get('application/json', {}).get('schema', {}) or content.get('application/xml', {}).get('schema', {}) or content.get('application/x-www-form-urlencoded', {}).get('schema', {})
+        json_schema = self.resolve_schema_ref(schema, all_references) if schema else { "type": "object", "properties": {} }
+
+        if not json_schema.get('description'):
+            json_schema['description'] = body.get('description', '')
+
         # add parameters from path and query
-        for parameter in operation.get('parameters', []):
-            name = parameter.get('name')
-            if parameter.get('required', False):
-                parameters["required"].append(name)
-            item = {
-                "type": parameter.get('schema', {}).get('type', 'string'),
-                "description": parameter.get('description', ''),
-            }
-            # Add format, enum, and example if available
-            for key in ['format', 'enum', 'example']:
-                if parameter.get('schema', {}).get(key):
-                    item[key] = parameter.get('schema', {}).get(key)
-            parameters["properties"][name] = item
+        parameters = operation.get('parameters', [])
+        if len(parameters) > 0:
+            if not json_schema.get('required'):
+                json_schema['required'] = []
+            if not json_schema.get('properties'):
+                json_schema['properties'] = {}
+            for parameter in parameters:
+                name = parameter.get('name')
+                if parameter.get('required', False):
+                    json_schema["required"].append(name)
+
+                parameter_schema = {
+                    "type": parameter.get('schema', {}).get('type', 'string'),
+                    "description": parameter.get('description', ''),
+                }
+                # Add format, enum, and example if available
+                for key in ['format', 'enum', 'example']:
+                    if parameter.get('schema', {}).get(key):
+                        parameter_schema[key] = parameter.get('schema', {}).get(key)
+                json_schema["properties"][name] = parameter_schema
 
         return {
             "type": "function",
             "function": {
                 "name": operation_id,
                 "description": operation.get('summary', '') or operation.get('description', ''),
-                "parameters": parameters,
+                "parameters": json_schema,
             }
         }
 
@@ -374,7 +379,7 @@ class OpenAPIClient:
         client_instance.paths = paths
         client_instance.tools = tools
 
-    def _prepare_request_params(self, path, operation, kwargs):
+    def _prepare_request_params(self, path, operation, args, kwargs):
         """
         Prepare request parameters for an API operation.
 
@@ -397,6 +402,8 @@ class OpenAPIClient:
                 name = param.get('name')
                 if name in kwargs:
                     path_params[name] = kwargs.pop(name)
+                elif len(args) > 0:
+                    path_params[name] = args.pop(0)  # Pop the first positional argument
 
         # Replace path parameters in the URL
         for name, value in path_params.items():
@@ -412,6 +419,8 @@ class OpenAPIClient:
                 name = param.get('name')
                 if name in kwargs:
                     query_params[name] = kwargs.pop(name)
+                elif len(args) > 0:
+                    query_params[name] = args.pop(0)  # Pop the first positional argument
 
         # Handle headers
         headers = kwargs.pop('headers', {})
@@ -419,7 +428,7 @@ class OpenAPIClient:
         # Handle request body
         body = kwargs.pop('data', None) or kwargs.pop('body', None)
         # json body
-        if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}).get('application/json'):
+        if not body and len(kwargs) > 0 and operation.get('requestBody', {}).get('content', {}):
             body = kwargs.copy()
             kwargs.clear()  # Clear the kwargs after using them as body
 
@@ -466,7 +475,7 @@ class OpenAPIClient:
             async def operation_method(*args, **kwargs):
                 # Prepare request parameters
                 full_url, query_params, body, headers, remaining_kwargs = self._prepare_request_params(
-                    path, operation, kwargs.copy()
+                    path, operation, list(args), kwargs.copy()
                 )
 
                 # Make the async request
@@ -485,7 +494,7 @@ class OpenAPIClient:
             def operation_method(*args, **kwargs):
                 # Prepare request parameters
                 full_url, query_params, body, headers, remaining_kwargs = self._prepare_request_params(
-                    path, operation, kwargs.copy()
+                    path, operation, list(args), kwargs.copy()
                 )
 
                 # Make the sync request
