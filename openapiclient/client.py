@@ -295,26 +295,30 @@ class OpenAPIClient:
         schema = content.get('application/json', {}).get('schema', {}) or content.get('application/xml', {}).get('schema', {}) or content.get('application/x-www-form-urlencoded', {}).get('schema', {})
         json_schema = self.resolve_schema_ref(schema, all_references) if schema else { "type": "object", "properties": {} }
 
+        if not json_schema.get('description'):
+            json_schema['description'] = body.get('description', '')
+
         # add parameters from path and query
-        for parameter in operation.get('parameters', []):
+        parameters = operation.get('parameters', [])
+        if len(parameters) > 0:
             if not json_schema.get('required'):
                 json_schema['required'] = []
             if not json_schema.get('properties'):
                 json_schema['properties'] = {}
+            for parameter in parameters:
+                name = parameter.get('name')
+                if parameter.get('required', False):
+                    json_schema["required"].append(name)
 
-            name = parameter.get('name')
-            if parameter.get('required', False):
-                json_schema["required"].append(name)
-
-            parameter_schema = {
-                "type": parameter.get('schema', {}).get('type', 'string'),
-                "description": parameter.get('description', ''),
-            }
-            # Add format, enum, and example if available
-            for key in ['format', 'enum', 'example']:
-                if parameter.get('schema', {}).get(key):
-                    parameter_schema[key] = parameter.get('schema', {}).get(key)
-            json_schema["properties"][name] = parameter_schema
+                parameter_schema = {
+                    "type": parameter.get('schema', {}).get('type', 'string'),
+                    "description": parameter.get('description', ''),
+                }
+                # Add format, enum, and example if available
+                for key in ['format', 'enum', 'example']:
+                    if parameter.get('schema', {}).get(key):
+                        parameter_schema[key] = parameter.get('schema', {}).get(key)
+                json_schema["properties"][name] = parameter_schema
 
         return {
             "type": "function",
