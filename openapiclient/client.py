@@ -475,7 +475,7 @@ class OpenAPIClient:
             async def operation_method(*args, **kwargs):
                 # Prepare request parameters
                 full_url, query_params, body, headers, remaining_kwargs = self._prepare_request_params(
-                    path, operation, args, kwargs.copy()
+                    path, operation, list(args), kwargs.copy()
                 )
 
                 # Make the async request
@@ -494,7 +494,7 @@ class OpenAPIClient:
             def operation_method(*args, **kwargs):
                 # Prepare request parameters
                 full_url, query_params, body, headers, remaining_kwargs = self._prepare_request_params(
-                    path, operation, args, kwargs.copy()
+                    path, operation, list(args), kwargs.copy()
                 )
 
                 # Make the sync request
