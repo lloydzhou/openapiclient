@@ -3,6 +3,8 @@ import json
 import os.path
 from urllib.parse import urljoin, urlparse
 import yaml
+import re
+
 
 # 合并DynamicClientBase和BaseClient为一个基类
 class BaseClient:
@@ -67,13 +69,13 @@ class Client(BaseClient):
     def __init__(self, api, **kwargs):
         """Initialize the sync client"""
         super().__init__(api)
-        self.session = httpx.Client(**kwargs)
+        self.session = api.httpx_client or httpx.Client(**kwargs)
 
     def __enter__(self):
         """Enter context manager and initialize the client"""
         if not self.api.definition:
             self.api._load_definition_sync()
-            
+
         self.setup_base_url()
         # Generate methods directly on this instance
         self.api._generate_client_methods(self, is_async=False)
@@ -94,7 +96,7 @@ class AsyncClient(BaseClient):
     def __init__(self, api, **kwargs):
         """Initialize the async client"""
         super().__init__(api)
-        self.session = httpx.AsyncClient(**kwargs)
+        self.session = api.httpx_async_client or httpx.AsyncClient(**kwargs)
 
     async def __aenter__(self):
         """Enter async context manager and initialize the client"""
@@ -110,6 +112,50 @@ class AsyncClient(BaseClient):
         """Exit async context manager and close resources"""
         if self.session:
             await self.session.aclose()
+
+
+def sanitize_openapi_path(path: str) -> str:
+    """
+    Convert OpenAPI path (e.g. "/v3/symbols/{symbol}/session") into a valid Python identifier.
+    """
+
+    # replace path parameters {param} with sanitized param name prefixed with "by_"
+    def repl_param(m):
+        name = m.group(1) or ""
+        # sanitize param name: replace non-alnum/_ with underscore and collapse
+        name = re.sub(r"[^0-9A-Za-z_]", "_", name)
+        name = re.sub(r"_+", "_", name).strip("_")
+        return "by_" + name
+
+    s = re.sub(r"\{([^}]*)\}", repl_param, path)
+    # replace slashes/backslashes with underscore
+    s = re.sub(r"[\\/]+", "_", s)
+    # replace any remaining non-alnum/_ with underscore
+    s = re.sub(r"[^0-9A-Za-z_]", "_", s)
+    # collapse underscores and strip edges
+    s = re.sub(r"_+", "_", s).strip("_")
+
+    return s
+
+
+def resolve_open_api_reference(dct, definition):
+    if "$ref" not in dct:
+        return dct
+    else:
+        ref_path = dct["$ref"]
+        # Only handling local references for simplicity
+        if not ref_path.startswith("#/"):
+            raise NotImplementedError(
+                "Only local references are supported in this implementation."
+            )
+
+        parts = ref_path.lstrip("#/").split("/")
+        ref = definition
+        for part in parts:
+            ref = ref.get(part)
+            if ref is None:
+                raise ValueError(f"Reference {ref_path} could not be resolved.")
+        return ref
 
 
 # Create the main OpenAPIClient class as a factory
@@ -130,7 +176,7 @@ class OpenAPIClient:
             result = await client.operation_name(param1=value)
     """
 
-    def __init__(self, definition=None):
+    def __init__(self, definition=None, httpx_client=None, httpx_async_client=None):
         """
         Initialize the OpenAPI client.
 
@@ -139,8 +185,10 @@ class OpenAPIClient:
         """
         self.definition_source = definition
         self.definition = {}
-        self.base_url = ''
+        self.base_url = ""
         self.source_url = None  # Store the source URL if loaded from a URL
+        self.httpx_client = httpx_client
+        self.httpx_async_client = httpx_async_client
 
     def Client(self, **kwargs):
         """
@@ -153,7 +201,7 @@ class OpenAPIClient:
             Client: A synchronous client
         """
         return Client(self, **kwargs)
-        
+
     def AsyncClient(self, **kwargs):
         """
         Create an asynchronous client instance that can be used as a context manager.
@@ -353,7 +401,9 @@ class OpenAPIClient:
         for operation in self.get_operations():
             operation_id = operation.get('operationId')
             if not operation_id:
-                continue
+                operation_id = (
+                    operation["method"] + "_" + sanitize_openapi_path(operation["path"])
+                )
 
             path = operation.get('path')
             paths.append(path)
@@ -399,6 +449,7 @@ class OpenAPIClient:
         # Extract parameters from operation definition
         parameters = operation.get('parameters', [])
         for param in parameters:
+            param = resolve_open_api_reference(param, self.definition)
             if param.get('in') == 'path':
                 name = param.get('name')
                 if name in kwargs:
@@ -416,6 +467,7 @@ class OpenAPIClient:
         # Handle query parameters
         query_params = {}
         for param in parameters:
+            param = resolve_open_api_reference(param, self.definition)
             if param.get('in') == 'query':
                 name = param.get('name')
                 if name in kwargs:
@@ -483,10 +535,10 @@ class OpenAPIClient:
                 response = await client_instance.session.request(
                     method,
                     full_url,
-                    params=query_params, 
-                    json=body, 
-                    headers=headers,
-                    **remaining_kwargs
+                    params=query_params,
+                    json=body,
+                    headers=dict(client_instance.session.headers) | headers,
+                    **remaining_kwargs,
                 )
 
                 # Process the response
@@ -502,10 +554,10 @@ class OpenAPIClient:
                 response = client_instance.session.request(
                     method,
                     full_url,
-                    params=query_params, 
-                    json=body, 
-                    headers=headers,
-                    **remaining_kwargs
+                    params=query_params,
+                    json=body,
+                    headers=dict(client_instance.session.headers) | headers,
+                    **remaining_kwargs,
                 )
 
                 # Process the response
