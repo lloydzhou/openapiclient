@@ -4,8 +4,8 @@ Register an API by name, then call its operations through dynamically
 generated commands::
 
     oapi connect petstore https://petstore.example.com/openapi.json
-    oapi petstore get-pet 42
-    oapi petstore list-pets --status available --jq '.items[].name'
+    oapi petstore get-pet-by-id 42
+    oapi petstore find-pets-by-status --status available --jq '[].name'
 
 Design notes (borrowed from restish / gh / lark-cli):
 - required path parameters become positional arguments, in URL-template order
@@ -126,11 +126,29 @@ def load_spec_source(source, timeout=30.0, insecure=False):
     return spec
 
 
-def spec_base_url(spec):
+def resolve_server_base(spec, source=None):
+    """Absolute base URL from the first server entry.
+
+    OpenAPI allows relative server URLs (e.g. "/api/v3"), which must be
+    resolved against the URL the spec document itself was fetched from.
+    """
     servers = spec.get("servers") or []
-    if servers and isinstance(servers[0], dict) and servers[0].get("url"):
-        return servers[0]["url"].rstrip("/")
-    return ""
+    url = ""
+    if servers and isinstance(servers[0], dict):
+        url = (servers[0].get("url") or "").rstrip("/")
+    if not url:
+        return ""
+    if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
+        return url
+    if source and re.match(r"^https?://", source):
+        from urllib.parse import urljoin
+
+        return urljoin(source, url).rstrip("/")
+    return url
+
+
+def spec_base_url(spec, source=None):
+    return resolve_server_base(spec, source)
 
 
 # --------------------------------------------------------------------------
@@ -255,7 +273,7 @@ def click_type(meta):
 
 def build_request(operation, api_entry, kwargs, param_metas, has_body, global_opts):
     """Assemble (url, params, headers, json_body) from CLI kwargs."""
-    base = spec_base_url(api_entry["spec"]) or api_entry["source"]
+    base = spec_base_url(api_entry["spec"], api_entry.get("source"))
     url = operation["path"]
     params, headers = {}, dict(global_opts["headers"])
     body = None
@@ -300,6 +318,12 @@ def execute(name, operation, api_entry, kwargs, param_metas, has_body, global_op
     url, params, headers, body = build_request(
         operation, api_entry, kwargs, param_metas, has_body, global_opts
     )
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
+        raise click.ClickException(
+            f"cannot determine an absolute URL for {operation['path']!r}: the spec "
+            "declares no absolute server URL, and relative server URLs require "
+            "registering the spec from an http(s) source"
+        )
     method = operation["method"].upper()
 
     if global_opts["dry_run"]:
@@ -430,6 +454,13 @@ def build_operation_command(name, operation, api_entry):
                 help="request body field key=value (repeatable; value smart-parsed)",
             )
         )
+    # per-command output options (override the global ones); gh-style
+    params.append(
+        click.Option(["--jq"], type=str, default=None,
+                     help="filter output with a dot-path (e.g. [].name)"))
+    params.append(
+        click.Option(["-o", "--output"], type=click.Choice(["json", "text"]),
+                     default=None, help="output format for the response payload"))
 
     summary = operation.get("summary") or operation.get("description") or ""
     help_text = summary
@@ -440,6 +471,9 @@ def build_operation_command(name, operation, api_entry):
     def callback(**kwargs):
         ctx = click.get_current_context()
         global_opts = ctx.obj or {}
+        # per-command --jq/-o win over the global ones
+        jq = kwargs.pop("jq", None) or global_opts.get("jq")
+        output = kwargs.pop("output", None) or global_opts.get("output", "json")
         result = execute(
             name,
             operation,
@@ -450,7 +484,7 @@ def build_operation_command(name, operation, api_entry):
             global_opts,
         )
         if result is not None:
-            emit(result, global_opts.get("output", "json"), global_opts.get("jq"))
+            emit(result, output, jq)
 
     return click.Command(
         cmd_name,
@@ -495,6 +529,20 @@ class ApiGroup(click.Group):
         if op is not None:
             return build_operation_command(self.api_name, op, self.api_entry)
         return None
+
+    def resolve_command(self, ctx, args):
+        try:
+            return super().resolve_command(ctx, args)
+        except click.UsageError:
+            # point the user at the real operation names instead of a bare
+            # "No such command"
+            ops = ", ".join(self.list_commands(ctx))
+            raise click.UsageError(
+                f"No such operation {args[0]!r} for API {self.api_name!r}.\n"
+                f"Available operations: {ops}\n"
+                f"Inspect them with: oapi schema {self.api_name}",
+                ctx=ctx,
+            )
 
 
 BUILTIN_COMMANDS = ("connect", "sync", "ls", "rm", "schema", "api")
@@ -623,11 +671,11 @@ def schema(name, operation):
     click.echo(json.dumps(info, ensure_ascii=False, indent=2))
 
 
-def spec_origin(spec):
+def spec_origin(spec, source=None):
     """scheme://netloc of the first server (raw `api` command base)."""
-    servers = spec.get("servers") or []
-    if servers and isinstance(servers[0], dict) and servers[0].get("url"):
-        parsed = urlparse(servers[0]["url"])
+    base = resolve_server_base(spec, source)
+    if base:
+        parsed = urlparse(base)
         if parsed.scheme:
             return f"{parsed.scheme}://{parsed.netloc}"
     return ""
@@ -639,8 +687,11 @@ def spec_origin(spec):
 @click.argument("path")
 @click.option("--params", help="query parameters as JSON (inline / @file / -)")
 @click.option("--data", help="request body as JSON (inline / @file / -)")
+@click.option("--jq", default=None, help="filter output with a dot-path (e.g. [].name)")
+@click.option("-o", "--output", type=click.Choice(["json", "text"]), default=None,
+              help="output format for the response payload")
 @click.pass_context
-def api_command(ctx, name, http_method, path, params, data):
+def api_command(ctx, name, http_method, path, params, data, jq, output):
     """Raw escape hatch: call any endpoint by METHOD + full path.
 
     PATH is the absolute path including any prefix (e.g. /v1/pets).
@@ -650,7 +701,7 @@ def api_command(ctx, name, http_method, path, params, data):
     body = parse_body_text(data) if data else None
     from urllib.parse import urljoin
 
-    base = spec_origin(entry["spec"]) or entry["source"]
+    base = spec_origin(entry["spec"], entry.get("source")) or entry["source"]
     url = urljoin(base + "/", path.lstrip("/"))
     global_opts = ctx.obj or {}
 
@@ -686,7 +737,9 @@ def api_command(ctx, name, http_method, path, params, data):
                 return resp.text
         return resp.text
 
-    emit(run(), global_opts.get("output", "json"), global_opts.get("jq"))
+    emit(run(),
+         output or global_opts.get("output", "json"),
+         jq or global_opts.get("jq"))
 
 
 # --------------------------------------------------------------------------
@@ -712,9 +765,9 @@ def main(ctx, output, jq, headers, timeout, insecure, dry_run, verbose):
     \b
     Examples:
       oapi connect petstore ./petstore.json
-      oapi petstore get-pet 42
-      oapi petstore list-pets --status available --jq 'items[].name'
-      oapi schema petstore get-pet
+      oapi petstore get-pet-by-id 42
+      oapi petstore find-pets-by-status --status available --jq '[].name'
+      oapi schema petstore get-pet-by-id
       oapi api petstore GET /v1/pets --params '{"limit": 10}'
     """
     hdrs = {}

@@ -1,6 +1,7 @@
 """Tests for the oapi CLI: registry, dynamic commands, body handling, output contract."""
 
 import json
+import pathlib
 
 import pytest
 
@@ -124,6 +125,16 @@ def test_missing_required_positional(petstore):
     assert result.exit_code == 2
 
 
+def test_unknown_operation_hint_lists_real_commands(petstore):
+    result = petstore.invoke(cli.main, ["petstore", "frobnicate"])
+    assert result.exit_code == 2
+    err = result.stderr
+    assert "No such operation 'frobnicate'" in err
+    assert "Available operations:" in err
+    assert "get-pet" in err                     # fixture operations listed
+    assert "oapi schema petstore" in err         # points at the introspection cmd
+
+
 def test_body_inline_json(petstore, fake_http):
     fake = fake_http((201, {"ok": True}))
     result = petstore.invoke(cli.main, ["petstore", "create-pet", "--body", '{"name": "Rex"}'])
@@ -204,6 +215,48 @@ def test_jq_filters_output(petstore, fake_http):
     fake_http((200, {"body": {"name": "Rex"}}))
     result = petstore.invoke(cli.main, ["--jq", ".body.name", "petstore", "get-pet", "1"])
     assert result.output.strip() == '"Rex"'
+
+
+def test_jq_option_on_subcommand(petstore, fake_http):
+    # gh-style: --jq works after the subcommand, overriding the global slot
+    fake_http((200, [{"id": 1}, {"id": 2}]))
+    result = petstore.invoke(
+        cli.main, ["petstore", "list-pets", "--jq", "[0].id"])
+    assert result.exit_code == 0, result.stderr
+    assert result.output.strip() == "1"
+
+    fake_http((200, {"a": 1}))
+    result = petstore.invoke(
+        cli.main, ["--jq", "a", "petstore", "list-pets", "--jq", "a"])
+    assert result.output.strip() == "1"  # per-command value wins
+
+
+def test_relative_server_url_resolved_against_source(isolated_registry):
+    from click.testing import CliRunner
+
+    spec = json.loads((pathlib.Path(__file__).parent / "petstore.json").read_text())
+    spec["servers"] = [{"url": "/api/v3"}]  # relative, like petstore3.swagger.io
+    cli.save_api("rel", "https://spec.example.com/api/v3/openapi.json", spec)
+    runner = CliRunner(mix_stderr=False)
+    result = runner.invoke(cli.main, ["--dry-run", "rel", "get-pet", "42"])
+    assert result.exit_code == 0, result.stderr
+    preview = json.loads(result.output)
+    assert preview["url"] == "https://spec.example.com/api/v3/pets/42"
+
+
+def test_unresolvable_server_url_clear_error(petstore, isolated_registry):
+    # relative server URL + local-file source -> no way to build an absolute URL
+    import pathlib as _pl
+
+    spec = json.loads((_pl.Path(__file__).parent / "petstore.json").read_text())
+    spec["servers"] = [{"url": "/api/v3"}]
+    cli.save_api("relfile", "/tmp/some-local-spec.json", spec)
+    from click.testing import CliRunner
+
+    runner = CliRunner(mix_stderr=False)
+    result = runner.invoke(cli.main, ["relfile", "get-pet", "42"])
+    assert result.exit_code != 0
+    assert "absolute URL" in result.stderr
 
 
 def test_jq_miss_reports_error(petstore, fake_http):
