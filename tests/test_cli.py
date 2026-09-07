@@ -237,9 +237,11 @@ def test_non_json_response_returned_as_text(petstore, fake_http):
 def test_raw_api_escape_hatch(petstore, fake_http):
     fake = fake_http((200, {"ok": 1}))
     result = petstore.invoke(
-        cli.main, ["api", "petstore", "GET", "/v1/pets", "--params", '{"limit": "3"}'])
+        cli.main, ["--header", "X-Trace: t1", "api", "petstore", "GET", "/v1/pets",
+                   "--params", '{"limit": "3"}'])
     assert result.exit_code == 0
     (call,) = fake.calls
     assert call["method"] == "GET"
     assert call["url"] == "http://api.example.com/v1/pets"
     assert call["params"] == {"limit": "3"}
+    assert call["headers"]["X-Trace"] == "t1"  # global --header applies here too

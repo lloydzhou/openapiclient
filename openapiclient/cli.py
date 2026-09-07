@@ -657,14 +657,17 @@ def api_command(ctx, name, http_method, path, params, data):
     def run():
         import httpx
 
+        headers = global_opts.get("headers") or {}
         if global_opts.get("dry_run"):
             click.echo(json.dumps(
-                {"method": http_method.upper(), "url": url, "params": query, "json": body},
+                {"method": http_method.upper(), "url": url, "params": query,
+                 "headers": headers, "json": body},
                 ensure_ascii=False, indent=2))
             return None
         resp = httpx.request(
             http_method.upper(), url,
             params=query or None, json=body,
+            headers=headers or None,
             timeout=global_opts.get("timeout", 30.0),
             verify=not global_opts.get("insecure", False),
         )
