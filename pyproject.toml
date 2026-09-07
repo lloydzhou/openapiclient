@@ -9,7 +9,7 @@ description = "A Python client for OpenAPI specifications using httpx"
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "lloydzhou", email = "lloydzhou@qq.com" }]
-requires-python = ">=3.8"
+requires-python = ">=3.7"
 dependencies = [
     "httpx>=0.23.0",
     "pyyaml>=6.0",

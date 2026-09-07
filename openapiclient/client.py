@@ -6,10 +6,6 @@ import yaml
 import re
 
 
-# Safety limit for resolve_schema_ref recursion depth.
-MAX_SCHEMA_REF_DEPTH = 32
-
-
 def extract_parameter_meta(parameter, definition=None):
     """Extract CLI-friendly metadata from an OpenAPI parameter object.
 
@@ -360,18 +356,22 @@ class OpenAPIClient:
 
         return operations
 
-    def resolve_schema_ref(self, schema, all_references, _seen=None, _depth=0):
+    def resolve_schema_ref(self, schema, all_references, _seen=None):
         """Resolve schema references to their actual schema.
 
-        Guards against pathological inputs: self-referential objects built with
-        YAML aliases (shared dict identity) or overly deep nesting are truncated
-        instead of raising RecursionError. Resolution semantics are unchanged:
-        a ``$ref`` is resolved with a single hop (shallow), nested object
-        properties / array items are resolved recursively.
+        Behaviour-compatible with the previous release for every input that
+        did not crash it; the only changes are bug fixes:
+
+        - self-referential objects (built with YAML anchors/aliases) used to
+          hit ``RecursionError``; they are now truncated at the cycle
+        - non-dict schemas used to raise ``TypeError``/``AttributeError``;
+          they are now returned unchanged
+
+        Resolution semantics are unchanged: a ``$ref`` is resolved with a
+        single hop (shallow), nested object properties / array items are
+        resolved recursively in place.
         """
         if not isinstance(schema, dict):
-            return schema
-        if _depth > MAX_SCHEMA_REF_DEPTH:
             return schema
         if _seen is None:
             _seen = set()
@@ -383,10 +383,10 @@ class OpenAPIClient:
         elif schema.get('type') == 'object':
             child_seen = _seen | {id(schema)}
             for key, value in schema.get('properties', {}).items():
-                schema['properties'][key] = self.resolve_schema_ref(value, all_references, child_seen, _depth + 1)
+                schema['properties'][key] = self.resolve_schema_ref(value, all_references, child_seen)
         elif schema.get('type') == 'array':
             child_seen = _seen | {id(schema)}
-            schema['items'] = self.resolve_schema_ref(schema.get('items', {}), all_references, child_seen, _depth + 1)
+            schema['items'] = self.resolve_schema_ref(schema.get('items', {}), all_references, child_seen)
         return schema
 
     def create_tool(self, operation_id, operation, all_references):

@@ -6,6 +6,7 @@ shallow $ref resolution) so refactors cannot silently change it.
 """
 
 import asyncio
+import copy
 import json
 
 import httpx
@@ -14,7 +15,6 @@ import yaml
 
 from openapiclient import OpenAPIClient
 from openapiclient.client import (
-    MAX_SCHEMA_REF_DEPTH,
     extract_parameter_meta,
     resolve_open_api_reference,
     sanitize_openapi_path,
@@ -95,17 +95,27 @@ class TestResolveSchemaRef:
             self.refs(spec)["#/components/schemas/Pets"], self.refs(spec))
         assert arr["items"] == spec["components"]["schemas"]["Pet"]
 
-    def test_deeply_nested_schema_is_truncated_not_crashing(self):
-        # 100-level nested objects would crash with naive recursion limits
-        schema = {"type": "object", "properties": {}}
-        cur = schema
-        for _ in range(100):
-            cur["properties"]["child"] = {"type": "object", "properties": {}}
-            cur = cur["properties"]["child"]
+    def test_deeply_nested_schema_resolved_like_the_previous_release(self):
+        # 60-level nested objects: the old resolver handled this fine, so the
+        # new one must produce the identical fully-expanded result (no
+        # defensive depth cap that could change behaviour).
+        def build(depth):
+            if depth == 0:
+                return {"type": "string"}
+            return {"type": "object",
+                    "properties": {"child": build(depth - 1)}}
+
+        def expand(node):
+            # reference expansion the old code performed recursively
+            if isinstance(node, dict):
+                return {k: expand(v) for k, v in node.items()}
+            return node
+
+        schema = build(60)
         client = self.make_client()
-        out = client.resolve_schema_ref(schema, {})
-        assert isinstance(out, dict)
-        assert MAX_SCHEMA_REF_DEPTH < 100  # the guard must actually engage
+        out = client.resolve_schema_ref(copy.deepcopy(schema), {})
+        assert out == schema  # nothing to resolve; returned expanded & intact
+        assert "child" in out["properties"]
 
     def test_non_dict_schema_returned_as_is(self):
         client = self.make_client()
