@@ -5,8 +5,38 @@ A Python implementation inspired by [openapi-client-axios](https://github.com/op
 ## Installation
 
 ```bash
-pip install openapi-httpx-client
+pip install openapi-httpx-client        # library only
+pip install "openapi-httpx-client[cli]" # library + `oapi` command
 ```
+
+## CLI (`oapi`)
+
+The optional `[cli]` extra installs an `oapi` command that turns any OpenAPI
+spec into a CLI. Register an API once, then call its operations with generated
+commands (parameter design follows the conventions of `gh` / `restish`):
+
+```bash
+oapi connect petstore https://petstore3.swagger.io/api/v3/openapi.json
+oapi ls                                   # registered APIs
+oapi schema petstore                      # list generated commands
+oapi petstore get-pet-by-id 42            # required path params are positional
+oapi petstore find-pets-by-status --status available
+oapi petstore add-pet --body '{"name": "Rex", "photoUrls": []}'
+oapi petstore add-pet -F name=Rex -F 'photoUrls=["https://x/r.png"]'
+oapi api petstore GET /api/v3/store/inventory
+```
+
+Conventions:
+
+- operation command names are kebab-case (`getPetById` -> `get-pet-by-id`);
+  the raw `operationId` also works
+- query/header parameters become `--kebab-case` flags; `enum` values are
+  validated (`--status [available|pending|sold]`)
+- request body: `--body` (inline JSON / `@file` / `-` stdin) or repeated
+  `-F/--field key=value` (values parsed as JSON when possible)
+- stdout carries data only; diagnostics go to stderr; non-2xx exits 1
+- `--jq` filters output (`[].name`), `-o text` prints raw strings,
+  `--dry-run` prints the request without sending it
 
 ## Usage
 

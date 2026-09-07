@@ -5,8 +5,33 @@
 ## 安装
 
 ```bash
-pip install openapi-httpx-client
+pip install openapi-httpx-client        # 仅库
+pip install "openapi-httpx-client[cli]" # 库 + `oapi` 命令
 ```
+
+## CLI（`oapi`）
+
+安装 `[cli]` 扩展后会得到 `oapi` 命令，把任意 OpenAPI 规范变成命令行工具。
+注册一次，之后直接调用自动生成的子命令（参数设计参考 `gh` / `restish` 的约定）：
+
+```bash
+oapi connect petstore https://petstore3.swagger.io/api/v3/openapi.json
+oapi ls                                   # 已注册的 API
+oapi schema petstore                      # 列出生成的命令
+oapi petstore get-pet-by-id 42            # 必填 path 参数是位置参数
+oapi petstore find-pets-by-status --status available
+oapi petstore add-pet --body '{"name": "Rex", "photoUrls": []}'
+oapi petstore add-pet -F name=Rex -F 'photoUrls=["https://x/r.png"]'
+oapi api petstore GET /api/v3/store/inventory
+```
+
+约定：
+
+- 命令名为 kebab-case（`getPetById` -> `get-pet-by-id`），原始 `operationId` 也可用
+- query/header 参数映射为 `--kebab-case` 旗标；`enum` 自动校验（`--status [available|pending|sold]`）
+- 请求体：`--body`（JSON / `@file` / `-` 标准输入）或多次 `-F/--field key=value`
+- stdout 只输出数据，诊断信息走 stderr，非 2xx 响应以退出码 1 结束
+- `--jq` 过滤输出（如 `[].name`），`-o text` 输出原始字符串，`--dry-run` 只打印请求不发送
 
 ## 使用方法
 
