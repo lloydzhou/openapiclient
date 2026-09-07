@@ -6,6 +6,37 @@ import yaml
 import re
 
 
+# Safety limit for resolve_schema_ref recursion depth.
+MAX_SCHEMA_REF_DEPTH = 32
+
+
+def extract_parameter_meta(parameter, definition=None):
+    """Extract CLI-friendly metadata from an OpenAPI parameter object.
+
+    Returns a dict with keys: name, in, required, type, enum, format,
+    default, description and (for array parameters) item_type. The schema
+    ``type`` falls back to ``"string"`` when the spec does not declare one.
+    When ``definition`` is given, ``$ref`` parameters are resolved first.
+    """
+    if definition is not None and isinstance(parameter, dict) and "$ref" in parameter:
+        parameter = resolve_open_api_reference(parameter, definition)
+    parameter = parameter or {}
+    schema = parameter.get("schema") or {}
+    info = {
+        "name": parameter.get("name"),
+        "in": parameter.get("in", "query"),
+        "required": bool(parameter.get("required", False)),
+        "type": schema.get("type", "string"),
+        "enum": schema.get("enum"),
+        "format": schema.get("format"),
+        "default": schema.get("default"),
+        "description": parameter.get("description") or schema.get("description") or "",
+    }
+    if schema.get("type") == "array" and isinstance(schema.get("items"), dict):
+        info["item_type"] = schema["items"].get("type", "string")
+    return info
+
+
 # 合并DynamicClientBase和BaseClient为一个基类
 class BaseClient:
     """Base class for OpenAPI clients with common functionality"""
@@ -152,6 +183,11 @@ def resolve_open_api_reference(dct, definition):
         parts = ref_path.lstrip("#/").split("/")
         ref = definition
         for part in parts:
+            if not isinstance(ref, dict):
+                raise ValueError(
+                    f"Reference {ref_path} could not be resolved: "
+                    f"'{part}' is not an object."
+                )
             ref = ref.get(part)
             if ref is None:
                 raise ValueError(f"Reference {ref_path} could not be resolved.")
@@ -324,15 +360,33 @@ class OpenAPIClient:
 
         return operations
 
-    def resolve_schema_ref(self, schema, all_references):
-        """Resolve schema references to their actual schema"""
+    def resolve_schema_ref(self, schema, all_references, _seen=None, _depth=0):
+        """Resolve schema references to their actual schema.
+
+        Guards against pathological inputs: self-referential objects built with
+        YAML aliases (shared dict identity) or overly deep nesting are truncated
+        instead of raising RecursionError. Resolution semantics are unchanged:
+        a ``$ref`` is resolved with a single hop (shallow), nested object
+        properties / array items are resolved recursively.
+        """
+        if not isinstance(schema, dict):
+            return schema
+        if _depth > MAX_SCHEMA_REF_DEPTH:
+            return schema
+        if _seen is None:
+            _seen = set()
+        if id(schema) in _seen:
+            # Shared-object cycle (e.g. YAML anchors/aliases): stop expanding.
+            return schema
         if '$ref' in schema:
             schema = all_references.get(schema['$ref'], {})
         elif schema.get('type') == 'object':
+            child_seen = _seen | {id(schema)}
             for key, value in schema.get('properties', {}).items():
-                schema['properties'][key] = self.resolve_schema_ref(value, all_references)
+                schema['properties'][key] = self.resolve_schema_ref(value, all_references, child_seen, _depth + 1)
         elif schema.get('type') == 'array':
-            schema['items'] = self.resolve_schema_ref(schema.get('items', {}), all_references)
+            child_seen = _seen | {id(schema)}
+            schema['items'] = self.resolve_schema_ref(schema.get('items', {}), all_references, child_seen, _depth + 1)
         return schema
 
     def create_tool(self, operation_id, operation, all_references):
@@ -462,7 +516,15 @@ class OpenAPIClient:
             url = url.replace(f"{{{name}}}", str(value))
 
         # Build the full URL
-        full_url = urljoin(self.base_url, url)
+        # Note: urljoin() cannot be used here: OpenAPI paths are absolute
+        # ("/pets") and urljoin would drop any path prefix in the server URL
+        # (e.g. servers: [{url: "http://x/api/v1"}] + "/pets" used to yield
+        # "http://x/pets" instead of "http://x/api/v1/pets").
+        if self.base_url:
+            base = self.base_url.rstrip("/")
+            full_url = base + (url if url.startswith("/") else "/" + url)
+        else:
+            full_url = url
 
         # Handle query parameters
         query_params = {}
